@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pressure Calculator</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="input-panel" aria-labelledby="app-title">
+        <div class="brand-row">
+          <h1 id="app-title">Pressure Calculator</h1>
+          <span class="status-pill" id="modelStatus">Models loaded</span>
+        </div>
+
+        <form id="calculatorForm" class="input-grid">
+          <label>
+            <span>D</span>
+            <input id="D" name="D" type="number" step="any" min="0" value="762" required />
+          </label>
+          <label>
+            <span>t</span>
+            <input id="t" name="t" type="number" step="any" min="0" value="10" required />
+          </label>
+          <label>
+            <span>d</span>
+            <input id="d" name="d" type="number" step="any" min="0" value="4" required />
+          </label>
+          <label>
+            <span>L</span>
+            <input id="L" name="L" type="number" step="any" min="0" value="120" required />
+          </label>
+          <label>
+            <span>w</span>
+            <input id="w" name="w" type="number" step="any" min="0" value="60" required />
+          </label>
+          <label>
+            <span>sigma_y</span>
+            <input id="sigma_y" name="sigma_y" type="number" step="any" min="0" value="450" required />
+          </label>
+          <label>
+            <span>sigma_u</span>
+            <input id="sigma_u" name="sigma_u" type="number" step="any" min="0" value="535" required />
+          </label>
+
+          <div class="button-row">
+            <button type="submit">Calculate</button>
+            <button type="button" class="secondary" id="resetButton">Reset Sample</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="results-panel" aria-labelledby="results-title">
+        <h2 id="results-title">Results</h2>
+        <div id="errorBox" class="error-box" hidden></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Category</th>
+                <th>Method</th>
+                <th>Prediction</th>
+                <th>Margin</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script src="model-data.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
