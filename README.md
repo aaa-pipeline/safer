@@ -5,7 +5,7 @@ This is the pure static web version of the local pressure calculator.
 Open:
 
 ```text
-web_calculator/index.html
+index.html
 ```
 
 No Python process, cloud server, or local web server is required. The page loads
@@ -36,6 +36,7 @@ The page returns:
 - DNV-RP-F101, ASME B31G, Modified B31G, PCORRC, Modified PCORRC
 - Top-3 residual models
 - Top-3 SAFER models
+- Operating-pressure margin and safety ratio for the user-specified `P_op`
 
 Each method name includes held-out test-set unsafe rate and MAPE, for example:
 

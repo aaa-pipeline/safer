@@ -10,6 +10,7 @@
     w: 60,
     sigma_y: 450,
     sigma_u: 535,
+    P_op: 8,
   };
 
   function calculate(input, modelData) {
@@ -42,6 +43,8 @@
         test_mape: metrics.test_mape,
         test_unsafe_rate: metrics.unsafe_rate,
         margin: null,
+        op_margin: row[column] - clean.P_op,
+        safety_ratio: row[column] / clean.P_op,
       });
     }
 
@@ -56,6 +59,8 @@
         test_mape: item.test_mape,
         test_unsafe_rate: item.unsafe_rate,
         margin: null,
+        op_margin: prediction - clean.P_op,
+        safety_ratio: prediction / clean.P_op,
       });
     }
 
@@ -77,14 +82,17 @@
         Number(params.risk_weight_floor || 0)
       );
       const margin = Number(params.fixed_floor || 0) + dynamic;
+      const prediction = pRaw - margin;
       results.push({
         category: "SAFER",
         method: item.label,
         display_method: displayMethod(item.label, item.unsafe_rate, item.test_mape),
-        prediction: pRaw - margin,
+        prediction,
         test_mape: item.test_mape,
         test_unsafe_rate: item.unsafe_rate,
         margin,
+        op_margin: prediction - clean.P_op,
+        safety_ratio: prediction / clean.P_op,
       });
     }
 
@@ -94,7 +102,8 @@
   function validateInput(input) {
     const out = {};
     for (const key of Object.keys(DEFAULTS)) {
-      const value = Number(input[key]);
+      const rawValue = input[key];
+      const value = rawValue === undefined && key === "P_op" ? DEFAULTS.P_op : Number(rawValue);
       if (!Number.isFinite(value) || value <= 0) {
         throw new Error(`${key} must be a positive number.`);
       }
@@ -336,6 +345,16 @@
       margin.className = "number";
       margin.textContent = formatNumber(row.margin);
       tr.appendChild(margin);
+
+      const opMargin = document.createElement("td");
+      opMargin.className = "number";
+      opMargin.textContent = formatNumber(row.op_margin);
+      tr.appendChild(opMargin);
+
+      const safetyRatio = document.createElement("td");
+      safetyRatio.className = "number";
+      safetyRatio.textContent = formatNumber(row.safety_ratio);
+      tr.appendChild(safetyRatio);
 
       body.appendChild(tr);
     }

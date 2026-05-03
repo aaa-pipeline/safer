@@ -43,6 +43,10 @@
             <span>sigma_u</span>
             <input id="sigma_u" name="sigma_u" type="number" step="any" min="0" value="535" required />
           </label>
+          <label>
+            <span>P_op</span>
+            <input id="P_op" name="P_op" type="number" step="any" min="0" value="8" required />
+          </label>
 
           <div class="button-row">
             <button type="submit">Calculate</button>
@@ -62,6 +66,8 @@
                 <th>Method</th>
                 <th>Prediction</th>
                 <th>Margin</th>
+                <th>Op margin</th>
+                <th>Safety ratio</th>
               </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
