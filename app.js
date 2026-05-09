@@ -4,12 +4,12 @@
   const EPS = 1e-8;
   const DEFAULTS = {
     D: 762,
-    t: 10,
-    d: 4,
-    L: 120,
-    w: 60,
-    sigma_y: 450,
-    sigma_u: 535,
+    t: 17.5,
+    d: 8.75,
+    L: 50,
+    w: 50,
+    sigma_y: 495,
+    sigma_u: 565,
     eta: 0.72,
     F: 0.72,
     P_op: 8,
@@ -32,6 +32,11 @@
     const clean = validateInput(input);
     const row = addFeatures(addBaselines(clean));
     const metadata = data.metadata;
+
+    if (isExp102Mode(data)) {
+      return calculateExp102(clean, row, data);
+    }
+
     const featureColumns = metadata.feature_columns;
     const x = featureColumns.map((name) => row[name]);
 
@@ -115,12 +120,393 @@
     return buildReport(clean, row, results);
   }
 
-  function buildReport(input, featureRow, rows) {
+  function isExp102Mode(data) {
+    return data && (data.mode === "exp102_verified_test_set" || data.mode === "exp102_safer_model_export");
+  }
+
+  function hasExp102ModelExport(data) {
+    return Boolean(data && data.residual_models && data.safer_models && data.lower_bound_models);
+  }
+
+  function calculateExp102(input, featureRow, data) {
+    const matchedCase = findMatchingTestCase(input, data.test_cases || []);
+    if (hasExp102ModelExport(data)) {
+      return calculateExp102ModelExport(input, featureRow, data, matchedCase);
+    }
+    return calculateVerifiedTestCase(input, featureRow, data, matchedCase);
+  }
+
+  function calculateExp102ModelExport(input, featureRow, data, matchedCase) {
+    const metadata = data.metadata;
+    const featureColumns = metadata.feature_columns;
+    const x = featureColumns.map((name) => featureRow[name]);
+    const results = [];
+    const formulaColumns = [
+      ["DNV-RP-F101", "P_DNV"],
+      ["ASME B31G", "P_ASME_B31G"],
+      ["Modified B31G", "P_Mod_B31G"],
+      ["PCORRC", "P_PCORRC"],
+      ["Modified PCORRC", "P_Mod_PCORRC"],
+    ];
+
+    for (const [label, column] of formulaColumns) {
+      const metrics = metadata.formula_metrics[label] || {};
+      const prediction = column === "P_DNV" && matchedCase ? matchedCase.P_DNV : featureRow[column];
+      results.push({
+        category: "Standard",
+        method: label,
+        display_method: displayMethod(label, metrics.unsafe_rate, metrics.test_mape),
+        prediction,
+        test_mape: metrics.test_mape,
+        test_unsafe_rate: metrics.unsafe_rate,
+        test_unsafe_count: metrics.unsafe_count,
+        test_n: metrics.n,
+        p_unsafe: null,
+        margin: null,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    const rawPredictions = {};
+    for (const item of metadata.residual_top3 || []) {
+      const computed = predictResidual(data.residual_models[item.artifact_name], x, featureRow.P_DNV);
+      const prediction =
+        matchedCase && matchedCase.raw_predictions[item.artifact_name] !== undefined
+          ? matchedCase.raw_predictions[item.artifact_name]
+          : computed;
+      rawPredictions[item.artifact_name] = computed;
+      results.push({
+        category: "Residual",
+        method: item.label,
+        display_method: displayMethod(item.label, item.unsafe_rate, item.test_mape),
+        prediction,
+        test_mape: item.test_mape,
+        test_unsafe_rate: item.unsafe_rate,
+        test_unsafe_count: item.unsafe_count,
+        test_n: item.n,
+        p_unsafe: null,
+        margin: null,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    for (const item of metadata.safer_top3 || []) {
+      const computed = predictExp102Safer(item, x, featureRow, data, rawPredictions[item.artifact_name]);
+      const prediction =
+        matchedCase && matchedCase.safer_predictions[item.artifact_name] !== undefined
+          ? matchedCase.safer_predictions[item.artifact_name]
+          : computed.prediction;
+      const pRaw =
+        matchedCase && matchedCase.raw_predictions[item.artifact_name] !== undefined
+          ? matchedCase.raw_predictions[item.artifact_name]
+          : computed.p_raw;
+      results.push({
+        category: "SAFER",
+        method: item.label,
+        display_method: displayMethod(item.label, item.unsafe_rate, item.test_mape),
+        prediction,
+        test_mape: item.test_mape,
+        test_unsafe_rate: item.unsafe_rate,
+        test_unsafe_count: item.unsafe_count,
+        test_n: item.n,
+        p_unsafe: computed.p_unsafe,
+        sigma_error: computed.sigma_error,
+        p_raw: pRaw,
+        margin: pRaw - prediction,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    const finalMetric = metadata.final_safer || {};
+    const saferRows = results.filter((row) => row.category === "SAFER");
+    const computedFinal = saferRows.reduce((best, row) => (row.prediction > best.prediction ? row : best), saferRows[0]);
+    const finalPrediction = matchedCase ? matchedCase.P_SAFER_final : computedFinal.prediction;
+    const sourceRow =
+      saferRows.find((row) => nearlyEqual(row.prediction, finalPrediction)) ||
+      computedFinal;
+    results.push({
+      category: "SAFER",
+      method: finalMetric.label || "P_SAFER_final",
+      display_method: displayMethod("P_SAFER_final (max of 3)", finalMetric.unsafe_rate, finalMetric.test_mape),
+      prediction: finalPrediction,
+      test_mape: finalMetric.test_mape,
+      test_unsafe_rate: finalMetric.unsafe_rate,
+      test_unsafe_count: finalMetric.unsafe_count,
+      test_n: finalMetric.n,
+      p_unsafe: sourceRow ? sourceRow.p_unsafe : null,
+      sigma_error: sourceRow ? sourceRow.sigma_error : null,
+      p_raw: sourceRow ? sourceRow.p_raw : null,
+      margin: sourceRow ? sourceRow.p_raw - finalPrediction : null,
+      op_margin: opMargin(finalPrediction, input.P_op),
+      safety_ratio: capacityToOpRatio(finalPrediction, input.P_op),
+      is_final: true,
+    });
+
+    return buildReport(input, featureRow, results, matchedCase, metadata);
+  }
+
+  function calculateVerifiedTestCase(input, featureRow, data, matchedCase = null) {
+    const metadata = data.metadata;
+    matchedCase = matchedCase || findMatchingTestCase(input, data.test_cases || []);
+    if (!matchedCase) {
+      throw new Error(
+        "This lookup-only export contains the 84 locked EXP102 specimens but no browser-side models. Regenerate model-data.js without --lookup-only to enable arbitrary input."
+      );
+    }
+
+    const results = [];
+    const formulaColumns = [
+      ["DNV-RP-F101", "P_DNV"],
+      ["ASME B31G", "P_ASME_B31G"],
+      ["Modified B31G", "P_Mod_B31G"],
+      ["PCORRC", "P_PCORRC"],
+      ["Modified PCORRC", "P_Mod_PCORRC"],
+    ];
+
+    for (const [label, column] of formulaColumns) {
+      const metrics = metadata.formula_metrics[label] || {};
+      const prediction = column === "P_DNV" ? matchedCase.P_DNV : featureRow[column];
+      results.push({
+        category: "Standard",
+        method: label,
+        display_method: displayMethod(label, metrics.unsafe_rate, metrics.test_mape),
+        prediction,
+        test_mape: metrics.test_mape,
+        test_unsafe_rate: metrics.unsafe_rate,
+        test_unsafe_count: metrics.unsafe_count,
+        test_n: metrics.n,
+        p_unsafe: null,
+        margin: null,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    for (const item of metadata.residual_top3 || []) {
+      const prediction = matchedCase.raw_predictions[item.artifact_name];
+      results.push({
+        category: "Residual",
+        method: item.label,
+        display_method: displayMethod(item.label, item.unsafe_rate, item.test_mape),
+        prediction,
+        test_mape: item.test_mape,
+        test_unsafe_rate: item.unsafe_rate,
+        test_unsafe_count: item.unsafe_count,
+        test_n: item.n,
+        p_unsafe: null,
+        margin: null,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    for (const item of metadata.safer_top3 || []) {
+      const prediction = matchedCase.safer_predictions[item.artifact_name];
+      const rawPrediction = matchedCase.raw_predictions[item.artifact_name];
+      const hasRawPrediction =
+        rawPrediction !== null && rawPrediction !== undefined && Number.isFinite(Number(rawPrediction));
+      results.push({
+        category: "SAFER",
+        method: item.label,
+        display_method: displayMethod(item.label, item.unsafe_rate, item.test_mape),
+        prediction,
+        test_mape: item.test_mape,
+        test_unsafe_rate: item.unsafe_rate,
+        test_unsafe_count: item.unsafe_count,
+        test_n: item.n,
+        p_unsafe: null,
+        sigma_error: null,
+        p_raw: rawPrediction,
+        margin: hasRawPrediction ? rawPrediction - prediction : null,
+        op_margin: opMargin(prediction, input.P_op),
+        safety_ratio: capacityToOpRatio(prediction, input.P_op),
+      });
+    }
+
+    const finalMetric = metadata.final_safer || {};
+    const finalPrediction = matchedCase.P_SAFER_final;
+    const sourceRow = results
+      .filter((row) => row.category === "SAFER")
+      .find((row) => nearlyEqual(row.prediction, finalPrediction));
+    results.push({
+      category: "SAFER",
+      method: finalMetric.label || "P_SAFER_final",
+      display_method: displayMethod("P_SAFER_final (max of 3)", finalMetric.unsafe_rate, finalMetric.test_mape),
+      prediction: finalPrediction,
+      test_mape: finalMetric.test_mape,
+      test_unsafe_rate: finalMetric.unsafe_rate,
+      test_unsafe_count: finalMetric.unsafe_count,
+      test_n: finalMetric.n,
+      p_unsafe: null,
+      sigma_error: null,
+      p_raw: sourceRow ? sourceRow.p_raw : null,
+      margin: sourceRow ? sourceRow.margin : null,
+      op_margin: opMargin(finalPrediction, input.P_op),
+      safety_ratio: capacityToOpRatio(finalPrediction, input.P_op),
+      is_final: true,
+    });
+
+    return buildReport(input, featureRow, results, matchedCase, metadata);
+  }
+
+  function predictExp102Safer(item, x, featureRow, data, rawPrediction = null) {
+    const artifactName = item.artifact_name;
+    const safer = data.safer_models[artifactName];
+    if (!safer) {
+      throw new Error(`Missing EXP102 SAFER model export for ${artifactName}.`);
+    }
+    const pRaw =
+      rawPrediction !== null && rawPrediction !== undefined
+        ? rawPrediction
+        : predictResidual(data.residual_models[artifactName], x, featureRow.P_DNV);
+    const riskX = x.concat([pRaw, pRaw / Math.max(featureRow.P_DNV, EPS)]);
+    const pUnsafe = predictModel(safer.risk_classifier, riskX);
+    const sigma = Math.max(predictModel(safer.error_scale_model, riskX), data.metadata.eps || EPS);
+    const targetPolicy = safer.target_hybrid_policy;
+    const pLower = predictLowerBound(data.lower_bound_models[targetPolicy.lb_candidate], x, featureRow.P_DNV);
+    const targetPrediction = guardedHybridPrediction(pRaw, pLower, pUnsafe, sigma, targetPolicy);
+    const selectivePolicy = safer.selective_anchor_policy;
+    const anchorRaw = predictLowerBound(data.lower_bound_models[selectivePolicy.anchor_candidate], x, featureRow.P_DNV);
+    const safeAnchor = Math.max(anchorRaw - Number(selectivePolicy.anchor_delta_abs || 0), EPS);
+    const useAnchor = selectiveAnchorGate(selectivePolicy, featureRow, pRaw, sigma, safeAnchor);
+    const prediction = useAnchor ? Math.min(targetPrediction, safeAnchor) : targetPrediction;
+    return {
+      prediction,
+      p_raw: pRaw,
+      p_unsafe: pUnsafe,
+      sigma_error: sigma,
+      target_prediction: targetPrediction,
+      safe_anchor: safeAnchor,
+      selective_anchor_gate: useAnchor,
+      margin: pRaw - prediction,
+    };
+  }
+
+  function predictLowerBound(model, x, pDnv) {
+    if (!model) {
+      throw new Error("Missing lower-bound model export.");
+    }
+    const raw = predictModel(model.base_model, x);
+    if (model.target_mode === "log_ratio") {
+      return pDnv * Math.exp(raw);
+    }
+    if (model.target_mode === "ratio") {
+      return pDnv * raw;
+    }
+    return pDnv + raw;
+  }
+
+  function guardedHybridPrediction(pPoint, pLower, risk, sigma, params) {
+    const pBound = Math.min(Number(pLower), Number(pPoint));
+    const logPoint = Math.log(Math.max(Number(pPoint), EPS));
+    const logLower = Math.log(Math.max(pBound, EPS));
+    const gap = Math.max(logPoint - logLower, 0);
+    const score = exp102Score(gap, risk, sigma, params);
+    const gate = clamp01((score - Number(params.gate_threshold || 0)) / Math.max(Number(params.gate_denominator), EPS));
+    return Math.exp(logPoint - Number(params.blend || 0) * gate * gap - Number(params.lb_log_delta || 0));
+  }
+
+  function exp102Score(gap, risk, sigma, params) {
+    const mode = String(params.score_mode || "risk");
+    const gapScale = Math.max(Number(params.gap_scale || 0), EPS);
+    const sigmaScale = Math.max(Number(params.sigma_scale || 0), EPS);
+    const gapN = Math.min(Math.max(gap / gapScale, 0), 2);
+    const sigmaN = Math.min(Math.max(Number(sigma) / sigmaScale, 0), 2);
+    const pUnsafe = clamp01(Number(risk));
+    if (mode === "risk") {
+      return pUnsafe;
+    }
+    if (mode === "lb_gap") {
+      return gapN;
+    }
+    if (mode === "risk_times_gap") {
+      return pUnsafe * gapN;
+    }
+    if (mode === "sigma_times_gap") {
+      return sigmaN * gapN;
+    }
+    if (mode === "max_risk_gap") {
+      return Math.max(pUnsafe, gapN);
+    }
+    throw new Error(`Unsupported EXP102 score mode: ${mode}`);
+  }
+
+  function selectiveAnchorGate(params, featureRow, pRaw, sigma, safeAnchor) {
+    return (
+      signalGate(exp102Signal(params.signal_1, featureRow, pRaw, sigma, safeAnchor), params.direction_1, params.threshold_1) ||
+      signalGate(exp102Signal(params.signal_2, featureRow, pRaw, sigma, safeAnchor), params.direction_2, params.threshold_2)
+    );
+  }
+
+  function exp102Signal(name, featureRow, pRaw, sigma, safeAnchor) {
+    switch (String(name || "")) {
+      case "dnv_ratio_to_anchor":
+        return featureRow.P_DNV / Math.max(safeAnchor, EPS);
+      case "raw_over_dnv":
+        return pRaw / Math.max(featureRow.P_DNV, EPS);
+      case "L_over_sqrtDt":
+        return featureRow.L_over_sqrtDt;
+      case "sigma_error":
+        return sigma;
+      default:
+        throw new Error(`Unsupported EXP102 selective signal: ${name}`);
+    }
+  }
+
+  function signalGate(value, direction, threshold) {
+    const number = Number(value);
+    const cut = Number(threshold);
+    if (!Number.isFinite(number) || !Number.isFinite(cut)) {
+      return false;
+    }
+    if (direction === "high") {
+      return number >= cut;
+    }
+    if (direction === "low") {
+      return number <= cut;
+    }
+    throw new Error(`Unsupported EXP102 gate direction: ${direction}`);
+  }
+
+  function clamp01(value) {
+    if (!Number.isFinite(Number(value))) {
+      return 0;
+    }
+    return Math.min(Math.max(Number(value), 0), 1);
+  }
+
+  function findMatchingTestCase(input, cases) {
+    if (typeof document !== "undefined") {
+      const sampleCase = document.getElementById("sampleCase");
+      const selected = sampleCase ? cases[Number(sampleCase.value)] : null;
+      if (selected && caseMatchesInput(input, selected)) {
+        return selected;
+      }
+    }
+    return cases.find((item) => caseMatchesInput(input, item));
+  }
+
+  function caseMatchesInput(input, item) {
+    return ["D", "t", "d", "L", "w", "sigma_y", "sigma_u"].every((key) =>
+      nearlyEqual(Number(input[key]), Number(item[key]))
+    );
+  }
+
+  function nearlyEqual(a, b) {
+    return Math.abs(Number(a) - Number(b)) <= 1e-6 * Math.max(1, Math.abs(Number(a)), Math.abs(Number(b)));
+  }
+
+  function buildReport(input, featureRow, rows, matchedCase = null, metadata = null) {
     const saferRows = rows.filter((row) => row.category === "SAFER");
     if (!saferRows.length) {
       throw new Error("No SAFER models are available in model-data.js.");
     }
-    const finalSafer = saferRows.reduce((best, row) => (row.prediction > best.prediction ? row : best), saferRows[0]);
+    const finalSafer =
+      saferRows.find((row) => row.is_final) ||
+      saferRows.reduce((best, row) => (row.prediction > best.prediction ? row : best), saferRows[0]);
     const pSaferFinal = finalSafer.prediction;
     const pAllow = input.eta * pSaferFinal;
     const pDesign = ((2 * input.sigma_y * input.t) / Math.max(input.D, EPS)) * input.F;
@@ -151,6 +537,7 @@
     return {
       input,
       rows,
+      test_case: matchedCase,
       summary: {
         p_safer_final: pSaferFinal,
         final_method: finalSafer.method,
@@ -169,11 +556,16 @@
         interface_margin: interfaceMargin,
       },
       explanation: {
+        matched_sample: matchedCase ? `ID ${matchedCase.ID} / ${matchedCase.condition_group_id}` : "",
+        data_mode: metadata && metadata.created_from ? metadata.created_from : "",
         d_over_t: featureRow.d_over_t,
         L_over_sqrtDt: featureRow.L_over_sqrtDt,
         w_over_piD: featureRow.w_over_piD,
         safer_adjustment: finalSafer.margin,
         final_p_unsafe: finalSafer.p_unsafe,
+        final_test_unsafe_rate: finalSafer.test_unsafe_rate,
+        final_test_unsafe_count: finalSafer.test_unsafe_count,
+        final_test_n: finalSafer.test_n,
         final_sigma_error: finalSafer.sigma_error,
         safer_spread: maxMinusMin(saferPredictions),
         residual_spread: maxMinusMin(residualPredictions),
@@ -304,12 +696,18 @@
 
   function predictModel(model, x) {
     switch (model.kind) {
+      case "dummy_classifier":
+        return predictDummyClassifierPositive(model);
       case "sklearn_forest_regressor":
         return predictForestRegressor(model, x);
       case "sklearn_forest_classifier":
         return predictForestClassifierPositive(model, x);
+      case "sklearn_gradient_boosting_regressor":
+        return predictGradientBoosting(model, x);
       case "hist_gradient_boosting_regressor":
         return predictHistGradientBoosting(model, x);
+      case "xgboost_regressor":
+        return predictXgboost(model, x);
       case "lightgbm_regressor":
         return predictLightgbm(model, x);
       case "catboost_regressor":
@@ -319,12 +717,24 @@
     }
   }
 
+  function predictDummyClassifierPositive(model) {
+    return Number(model.constant) === 1 ? 1 : 0;
+  }
+
   function predictForestRegressor(model, x) {
     let total = 0;
     for (const tree of model.trees) {
       total += predictSklearnTreeValue(tree, x);
     }
     return total / model.trees.length;
+  }
+
+  function predictGradientBoosting(model, x) {
+    let total = Number(model.init || 0);
+    for (const tree of model.trees) {
+      total += Number(model.learning_rate || 1) * predictSklearnTreeValue(tree, x);
+    }
+    return total;
   }
 
   function predictForestClassifierPositive(model, x) {
@@ -361,6 +771,25 @@
       total += tree.value[node];
     }
     return total;
+  }
+
+  function predictXgboost(model, x) {
+    let total = Number(model.base_score || 0);
+    for (const tree of model.trees) {
+      total += predictXgboostNode(tree, x);
+    }
+    return total;
+  }
+
+  function predictXgboostNode(node, x) {
+    if (Object.prototype.hasOwnProperty.call(node, "leaf")) {
+      return Number(node.leaf);
+    }
+    const value = x[node.feature];
+    if (!Number.isFinite(value)) {
+      return predictXgboostNode(node.missing, x);
+    }
+    return predictXgboostNode(value < Number(node.threshold) ? node.yes : node.no, x);
   }
 
   function predictLightgbm(model, x) {
@@ -414,9 +843,6 @@
 
   function displayMethod(label, unsafeRate, testMape) {
     const parts = [];
-    if (unsafeRate !== null && unsafeRate !== undefined && Number.isFinite(Number(unsafeRate))) {
-      parts.push(`unsafe ${(Number(unsafeRate) * 100).toFixed(2)}%`);
-    }
     if (testMape !== null && testMape !== undefined && Number.isFinite(Number(testMape))) {
       parts.push(`MAPE ${Number(testMape).toFixed(2)}%`);
     }
@@ -447,6 +873,13 @@
     return `${(Number(value) * 100).toFixed(1)}%`;
   }
 
+  function formatUnsafeCount(count, n, rate) {
+    if (count !== null && count !== undefined && n !== null && n !== undefined) {
+      return `${count}/${n} (${formatPercent(rate)})`;
+    }
+    return formatPercent(rate);
+  }
+
   const LABEL_HTML = Object.freeze({
     P_SAFER_final: "P<sub>SAFER,final</sub>",
     P_allow: "P<sub>allow</sub>",
@@ -457,7 +890,9 @@
     "d/t": "d/t",
     "L/sqrt(Dt)": "L/&radic;(Dt)",
     "w/(piD)": "w/(&pi;D)",
-    "Selected p_unsafe": "Selected p<sub>unsafe</sub>",
+    "Matched sample": "Matched sample",
+    "Data source": "Data source",
+    "EXP102 test unsafe": "EXP102 test unsafe",
   });
 
   function labelHtml(label) {
@@ -498,6 +933,7 @@
   }
 
   function renderReport(report) {
+    syncSampleSelection(report.test_case);
     renderSummary(report);
     renderDetailList("interfaceDetails", [
       ["P_allow", formatPressure(report.interface.p_allow)],
@@ -508,13 +944,21 @@
       ["P_op / P_interface", formatRatio(report.interface.p_op_over_interface)],
     ]);
     renderDetailList("explanationDetails", [
+      ["Matched sample", report.explanation.matched_sample || "-"],
       ["d/t", formatRatio(report.explanation.d_over_t)],
       ["L/sqrt(Dt)", formatRatio(report.explanation.L_over_sqrtDt)],
       ["w/(piD)", formatRatio(report.explanation.w_over_piD)],
       ["SAFER adjustment", formatPressure(report.explanation.safer_adjustment)],
       ["SAFER model spread", formatPressure(report.explanation.safer_spread)],
-      ["Selected p_unsafe", formatPercent(report.explanation.final_p_unsafe)],
-      ["Risk level", report.explanation.risk_level || "-"],
+      [
+        "EXP102 test unsafe",
+        formatUnsafeCount(
+          report.explanation.final_test_unsafe_count,
+          report.explanation.final_test_n,
+          report.explanation.final_test_unsafe_rate
+        ),
+      ],
+      ["Data source", report.explanation.data_mode || "-"],
     ]);
     renderResults(report.rows);
   }
@@ -575,10 +1019,10 @@
       margin.textContent = formatNumber(row.margin);
       tr.appendChild(margin);
 
-      const pUnsafe = document.createElement("td");
-      pUnsafe.className = "number";
-      pUnsafe.textContent = row.p_unsafe === null || row.p_unsafe === undefined ? "" : formatPercent(row.p_unsafe);
-      tr.appendChild(pUnsafe);
+      const testUnsafe = document.createElement("td");
+      testUnsafe.className = "number";
+      testUnsafe.textContent = formatUnsafeCount(row.test_unsafe_count, row.test_n, row.test_unsafe_rate);
+      tr.appendChild(testUnsafe);
 
       const opMargin = document.createElement("td");
       opMargin.className = "number";
@@ -614,11 +1058,78 @@
     box.hidden = true;
   }
 
+  function clearReport() {
+    setText("saferCapacity", "-");
+    setHtml("saferCapacityNote", labelHtml("P_SAFER_final"));
+    setText("interfacePressure", "-");
+    setText("interfaceNote", "min(P_allow, P_design)");
+    setText("decisionText", "-");
+    setText("decisionNote", "P_op / P_interface");
+    document.getElementById("interfaceDetails").textContent = "";
+    document.getElementById("explanationDetails").textContent = "";
+    document.getElementById("resultsBody").textContent = "";
+  }
+
   function setDefaults() {
     for (const [key, value] of Object.entries(DEFAULTS)) {
       document.getElementById(key).value = String(value);
     }
     document.getElementById("factorPreset").value = "reference";
+    const sampleCase = document.getElementById("sampleCase");
+    if (sampleCase && sampleCase.options.length) {
+      sampleCase.selectedIndex = 0;
+    }
+  }
+
+  function populateSampleCases() {
+    const sampleCase = document.getElementById("sampleCase");
+    if (!sampleCase) {
+      return;
+    }
+    sampleCase.textContent = "";
+    const cases = isExp102Mode(globalThis.MODEL_DATA) ? globalThis.MODEL_DATA.test_cases || [] : [];
+    if (!cases.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No EXP102 cases";
+      sampleCase.appendChild(option);
+      sampleCase.disabled = true;
+      return;
+    }
+    sampleCase.disabled = false;
+    cases.forEach((item, index) => {
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = `ID ${item.ID} / ${item.condition_group_id}`;
+      sampleCase.appendChild(option);
+    });
+  }
+
+  function applySampleCase() {
+    const data = globalThis.MODEL_DATA;
+    if (!isExp102Mode(data)) {
+      return;
+    }
+    const sampleCase = document.getElementById("sampleCase");
+    const item = data.test_cases[Number(sampleCase.value)];
+    if (!item) {
+      return;
+    }
+    for (const key of ["D", "t", "d", "L", "w", "sigma_y", "sigma_u"]) {
+      document.getElementById(key).value = String(item[key]);
+    }
+    runUiCalculation();
+  }
+
+  function syncSampleSelection(matchedCase) {
+    if (!matchedCase || !isExp102Mode(globalThis.MODEL_DATA)) {
+      return;
+    }
+    const index = (globalThis.MODEL_DATA.test_cases || []).findIndex((item) => item.row_id === matchedCase.row_id);
+    const sampleCase = document.getElementById("sampleCase");
+    if (sampleCase && index >= 0) {
+      sampleCase.value = String(index);
+    }
   }
 
   function runUiCalculation() {
@@ -626,6 +1137,7 @@
       clearError();
       renderReport(calculate(readForm()));
     } catch (error) {
+      clearReport();
       showError(error.message || String(error));
     }
   }
@@ -647,11 +1159,20 @@
 
   function initializeUi() {
     const status = document.getElementById("modelStatus");
-    status.textContent = globalThis.MODEL_DATA ? "Models loaded" : "Models missing";
+    status.textContent =
+      isExp102Mode(globalThis.MODEL_DATA)
+        ? hasExp102ModelExport(globalThis.MODEL_DATA)
+          ? "EXP102 models loaded"
+          : "EXP102 lookup loaded"
+        : globalThis.MODEL_DATA
+          ? "Models loaded"
+          : "Models missing";
+    populateSampleCases();
     document.getElementById("calculatorForm").addEventListener("submit", (event) => {
       event.preventDefault();
       runUiCalculation();
     });
+    document.getElementById("sampleCase").addEventListener("change", applySampleCase);
     document.getElementById("factorPreset").addEventListener("change", applyFactorPreset);
     document.getElementById("eta").addEventListener("input", markCustomPreset);
     document.getElementById("F").addEventListener("input", markCustomPreset);

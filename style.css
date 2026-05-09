@@ -265,6 +265,7 @@ dd {
   text-align: right;
   font-variant-numeric: tabular-nums;
   font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 table {

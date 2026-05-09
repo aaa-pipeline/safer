@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SAFER Pressure Interface Calculator</title>
-    <link rel="stylesheet" href="style.css?v=render-20260509" />
+    <title>EXP102 SAFER Pressure Interface Calculator</title>
+    <link rel="stylesheet" href="style.css?v=exp102-20260509" />
   </head>
   <body>
     <main class="app-shell">
       <section class="input-panel" aria-labelledby="app-title">
         <div class="brand-row">
-          <h1 id="app-title">SAFER Pressure Interface Calculator</h1>
-          <span class="status-pill" id="modelStatus">Models loaded</span>
+          <h1 id="app-title">EXP102 SAFER Pressure Interface Calculator</h1>
+          <span class="status-pill" id="modelStatus">EXP102 models loaded</span>
         </div>
 
         <form id="calculatorForm" class="input-grid">
@@ -19,32 +19,36 @@
             <h2>Pipe and defect</h2>
           </div>
           <label>
+            <span>EXP102 specimen shortcut</span>
+            <select id="sampleCase" name="sampleCase"></select>
+          </label>
+          <label>
             <span>D</span>
             <input id="D" name="D" type="number" step="any" min="0" value="762" required />
           </label>
           <label>
             <span>t</span>
-            <input id="t" name="t" type="number" step="any" min="0" value="10" required />
+            <input id="t" name="t" type="number" step="any" min="0" value="17.5" required />
           </label>
           <label>
             <span>d</span>
-            <input id="d" name="d" type="number" step="any" min="0" value="4" required />
+            <input id="d" name="d" type="number" step="any" min="0" value="8.75" required />
           </label>
           <label>
             <span>L</span>
-            <input id="L" name="L" type="number" step="any" min="0" value="120" required />
+            <input id="L" name="L" type="number" step="any" min="0" value="50" required />
           </label>
           <label>
             <span>w</span>
-            <input id="w" name="w" type="number" step="any" min="0" value="60" required />
+            <input id="w" name="w" type="number" step="any" min="0" value="50" required />
           </label>
           <label>
             <span>&sigma;<sub>y</sub></span>
-            <input id="sigma_y" name="sigma_y" type="number" step="any" min="0" value="450" required />
+            <input id="sigma_y" name="sigma_y" type="number" step="any" min="0" value="495" required />
           </label>
           <label>
             <span>&sigma;<sub>u</sub></span>
-            <input id="sigma_u" name="sigma_u" type="number" step="any" min="0" value="535" required />
+            <input id="sigma_u" name="sigma_u" type="number" step="any" min="0" value="565" required />
           </label>
           <div class="field-group">
             <h2>Screening settings</h2>
@@ -123,7 +127,7 @@
                 <th>Method</th>
                 <th>Prediction</th>
                 <th>Margin</th>
-                <th>p<sub>unsafe</sub></th>
+                <th>EXP102 test unsafe</th>
                 <th>Op margin</th>
                 <th>Capacity / P<sub>op</sub></th>
               </tr>
@@ -134,7 +138,7 @@
       </section>
     </main>
 
-    <script src="model-data.js?v=render-20260509"></script>
-    <script src="app.js?v=render-20260509"></script>
+    <script src="model-data.js?v=exp102-20260509-models"></script>
+    <script src="app.js?v=exp102-20260509-models"></script>
   </body>
 </html>
