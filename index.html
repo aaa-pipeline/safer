@@ -3,18 +3,21 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Pressure Calculator</title>
-    <link rel="stylesheet" href="style.css?v=opcheck-20260503" />
+    <title>SAFER Pressure Interface Calculator</title>
+    <link rel="stylesheet" href="style.css?v=render-20260509" />
   </head>
   <body>
     <main class="app-shell">
       <section class="input-panel" aria-labelledby="app-title">
         <div class="brand-row">
-          <h1 id="app-title">Pressure Calculator</h1>
+          <h1 id="app-title">SAFER Pressure Interface Calculator</h1>
           <span class="status-pill" id="modelStatus">Models loaded</span>
         </div>
 
         <form id="calculatorForm" class="input-grid">
+          <div class="field-group">
+            <h2>Pipe and defect</h2>
+          </div>
           <label>
             <span>D</span>
             <input id="D" name="D" type="number" step="any" min="0" value="762" required />
@@ -36,16 +39,41 @@
             <input id="w" name="w" type="number" step="any" min="0" value="60" required />
           </label>
           <label>
-            <span>sigma_y</span>
+            <span>&sigma;<sub>y</sub></span>
             <input id="sigma_y" name="sigma_y" type="number" step="any" min="0" value="450" required />
           </label>
           <label>
-            <span>sigma_u</span>
+            <span>&sigma;<sub>u</sub></span>
             <input id="sigma_u" name="sigma_u" type="number" step="any" min="0" value="535" required />
           </label>
+          <div class="field-group">
+            <h2>Screening settings</h2>
+          </div>
           <label>
-            <span>P_op</span>
-            <input id="P_op" name="P_op" type="number" step="any" min="0" value="8" required />
+            <span>Factor preset</span>
+            <select id="factorPreset" name="factorPreset">
+              <option value="reference">Reference &eta;=0.72, F=0.72</option>
+              <option value="conservative60">More conservative &eta;=0.60, F=0.60</option>
+              <option value="liquid54">Liquid &eta;=0.54, F=0.54</option>
+              <option value="class50">High consequence &eta;=0.50, F=0.50</option>
+              <option value="class40">Very conservative &eta;=0.40, F=0.40</option>
+              <option value="dnvReference">DNV-style &eta;=0.648, F=0.72</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <div class="factor-grid">
+            <label>
+              <span>&eta;</span>
+              <input id="eta" name="eta" type="number" step="any" min="0" value="0.72" required />
+            </label>
+            <label>
+              <span>F</span>
+              <input id="F" name="F" type="number" step="any" min="0" value="0.72" required />
+            </label>
+          </div>
+          <label>
+            <span>P<sub>op</sub> optional</span>
+            <input id="P_op" name="P_op" type="number" step="any" min="0" value="8" />
           </label>
 
           <div class="button-row">
@@ -58,6 +86,35 @@
       <section class="results-panel" aria-labelledby="results-title">
         <h2 id="results-title">Results</h2>
         <div id="errorBox" class="error-box" hidden></div>
+        <div class="summary-grid" aria-label="Main results">
+          <article class="summary-card">
+            <span class="card-label">Conservative burst capacity</span>
+            <strong id="saferCapacity">-</strong>
+            <small id="saferCapacityNote">P<sub>SAFER,final</sub></small>
+          </article>
+          <article class="summary-card">
+            <span class="card-label">Pressure interface</span>
+            <strong id="interfacePressure">-</strong>
+            <small id="interfaceNote">min(P<sub>allow</sub>, P<sub>design</sub>)</small>
+          </article>
+          <article class="summary-card decision-card" id="decisionCard">
+            <span class="card-label">Operating pressure check</span>
+            <strong id="decisionText">-</strong>
+            <small id="decisionNote">P<sub>op</sub> / P<sub>interface</sub></small>
+          </article>
+        </div>
+
+        <div class="detail-grid" aria-label="Interface and explanation">
+          <section class="detail-panel">
+            <h3>Pressure interface</h3>
+            <dl id="interfaceDetails"></dl>
+          </section>
+          <section class="detail-panel">
+            <h3>Model explanation</h3>
+            <dl id="explanationDetails"></dl>
+          </section>
+        </div>
+
         <div class="table-wrap">
           <table>
             <thead>
@@ -66,8 +123,9 @@
                 <th>Method</th>
                 <th>Prediction</th>
                 <th>Margin</th>
+                <th>p<sub>unsafe</sub></th>
                 <th>Op margin</th>
-                <th>Safety ratio</th>
+                <th>Capacity / P<sub>op</sub></th>
               </tr>
             </thead>
             <tbody id="resultsBody"></tbody>
@@ -76,7 +134,7 @@
       </section>
     </main>
 
-    <script src="model-data.js?v=opcheck-20260503"></script>
-    <script src="app.js?v=opcheck-20260503"></script>
+    <script src="model-data.js?v=render-20260509"></script>
+    <script src="app.js?v=render-20260509"></script>
   </body>
 </html>

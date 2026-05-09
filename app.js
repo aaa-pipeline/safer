@@ -10,7 +10,18 @@
     w: 60,
     sigma_y: 450,
     sigma_u: 535,
+    eta: 0.72,
+    F: 0.72,
     P_op: 8,
+  };
+
+  const FACTOR_PRESETS = {
+    reference: { eta: 0.72, F: 0.72 },
+    conservative60: { eta: 0.60, F: 0.60 },
+    liquid54: { eta: 0.54, F: 0.54 },
+    class50: { eta: 0.50, F: 0.50 },
+    class40: { eta: 0.40, F: 0.40 },
+    dnvReference: { eta: 0.648, F: 0.72 },
   };
 
   function calculate(input, modelData) {
@@ -42,9 +53,10 @@
         prediction: row[column],
         test_mape: metrics.test_mape,
         test_unsafe_rate: metrics.unsafe_rate,
+        p_unsafe: null,
         margin: null,
-        op_margin: row[column] - clean.P_op,
-        safety_ratio: row[column] / clean.P_op,
+        op_margin: opMargin(row[column], clean.P_op),
+        safety_ratio: capacityToOpRatio(row[column], clean.P_op),
       });
     }
 
@@ -58,9 +70,10 @@
         prediction,
         test_mape: item.test_mape,
         test_unsafe_rate: item.unsafe_rate,
+        p_unsafe: null,
         margin: null,
-        op_margin: prediction - clean.P_op,
-        safety_ratio: prediction / clean.P_op,
+        op_margin: opMargin(prediction, clean.P_op),
+        safety_ratio: capacityToOpRatio(prediction, clean.P_op),
       });
     }
 
@@ -90,24 +103,134 @@
         prediction,
         test_mape: item.test_mape,
         test_unsafe_rate: item.unsafe_rate,
+        p_unsafe: pUnsafe,
+        sigma_error: sigma,
+        p_raw: pRaw,
         margin,
-        op_margin: prediction - clean.P_op,
-        safety_ratio: prediction / clean.P_op,
+        op_margin: opMargin(prediction, clean.P_op),
+        safety_ratio: capacityToOpRatio(prediction, clean.P_op),
       });
     }
 
-    return results;
+    return buildReport(clean, row, results);
+  }
+
+  function buildReport(input, featureRow, rows) {
+    const saferRows = rows.filter((row) => row.category === "SAFER");
+    if (!saferRows.length) {
+      throw new Error("No SAFER models are available in model-data.js.");
+    }
+    const finalSafer = saferRows.reduce((best, row) => (row.prediction > best.prediction ? row : best), saferRows[0]);
+    const pSaferFinal = finalSafer.prediction;
+    const pAllow = input.eta * pSaferFinal;
+    const pDesign = ((2 * input.sigma_y * input.t) / Math.max(input.D, EPS)) * input.F;
+    const pInterface = Math.min(pAllow, pDesign);
+    const governing = pAllow <= pDesign ? "SAFER capacity" : "Design envelope";
+    const opRatio = input.P_op === null ? null : input.P_op / Math.max(pInterface, EPS);
+    const interfaceMargin = input.P_op === null ? null : pInterface - input.P_op;
+    const decision =
+      input.P_op === null
+        ? {
+            status: "incomplete",
+            label: "Interface only",
+            note: "Enter P_op to run the operating pressure check.",
+          }
+        : input.P_op <= pInterface
+          ? {
+              status: "pass",
+              label: "Pass screening",
+              note: `P_op is ${formatNumber(opRatio, 3)} of P_interface.`,
+            }
+          : {
+              status: "review",
+              label: "Review required",
+              note: `P_op exceeds P_interface by ${formatNumber(-interfaceMargin, 3)} MPa.`,
+            };
+    const saferPredictions = saferRows.map((row) => row.prediction);
+    const residualPredictions = rows.filter((row) => row.category === "Residual").map((row) => row.prediction);
+    return {
+      input,
+      rows,
+      summary: {
+        p_safer_final: pSaferFinal,
+        final_method: finalSafer.method,
+        p_interface: pInterface,
+        decision,
+      },
+      interface: {
+        p_allow: pAllow,
+        p_design: pDesign,
+        p_interface: pInterface,
+        governing,
+        eta: input.eta,
+        F: input.F,
+        p_op: input.P_op,
+        p_op_over_interface: opRatio,
+        interface_margin: interfaceMargin,
+      },
+      explanation: {
+        d_over_t: featureRow.d_over_t,
+        L_over_sqrtDt: featureRow.L_over_sqrtDt,
+        w_over_piD: featureRow.w_over_piD,
+        safer_adjustment: finalSafer.margin,
+        final_p_unsafe: finalSafer.p_unsafe,
+        final_sigma_error: finalSafer.sigma_error,
+        safer_spread: maxMinusMin(saferPredictions),
+        residual_spread: maxMinusMin(residualPredictions),
+        risk_level: riskLevel(finalSafer.p_unsafe),
+      },
+    };
+  }
+
+  function opMargin(prediction, pOp) {
+    return pOp === null ? null : prediction - pOp;
+  }
+
+  function capacityToOpRatio(prediction, pOp) {
+    return pOp === null ? null : prediction / Math.max(pOp, EPS);
+  }
+
+  function maxMinusMin(values) {
+    const clean = values.filter((value) => Number.isFinite(Number(value))).map(Number);
+    if (!clean.length) {
+      return null;
+    }
+    return Math.max(...clean) - Math.min(...clean);
+  }
+
+  function riskLevel(pUnsafe) {
+    if (!Number.isFinite(Number(pUnsafe))) {
+      return "";
+    }
+    if (pUnsafe >= 0.66) {
+      return "High";
+    }
+    if (pUnsafe >= 0.33) {
+      return "Medium";
+    }
+    return "Low";
   }
 
   function validateInput(input) {
     const out = {};
-    for (const key of Object.keys(DEFAULTS)) {
-      const rawValue = input[key];
-      const value = rawValue === undefined && key === "P_op" ? DEFAULTS.P_op : Number(rawValue);
+    const requiredKeys = ["D", "t", "d", "L", "w", "sigma_y", "sigma_u", "eta", "F"];
+    for (const key of requiredKeys) {
+      const rawValue = input[key] === undefined ? DEFAULTS[key] : input[key];
+      const value = Number(rawValue);
       if (!Number.isFinite(value) || value <= 0) {
         throw new Error(`${key} must be a positive number.`);
       }
       out[key] = value;
+    }
+    const rawPOp = input.P_op;
+    if (rawPOp === undefined || rawPOp === null || String(rawPOp).trim() === "") {
+      out.P_op = null;
+    } else {
+      const value = Number(rawPOp);
+      if (!Number.isFinite(value) || value <= 0) {
+        throw new Error("P_op must be a positive number or left blank.");
+      }
+      out.P_op = value;
     }
     if (out.d >= out.t) {
       throw new Error("d must be smaller than t.");
@@ -300,11 +423,69 @@
     return parts.length ? `${label} (${parts.join(", ")})` : label;
   }
 
-  function formatNumber(value) {
+  function formatNumber(value, decimals = 4) {
     if (value === null || value === undefined || !Number.isFinite(Number(value))) {
       return "";
     }
-    return Number(value).toFixed(4);
+    return Number(value).toFixed(decimals);
+  }
+
+  function formatPressure(value) {
+    const text = formatNumber(value, 3);
+    return text ? `${text} MPa` : "-";
+  }
+
+  function formatRatio(value) {
+    const text = formatNumber(value, 3);
+    return text || "-";
+  }
+
+  function formatPercent(value) {
+    if (value === null || value === undefined || !Number.isFinite(Number(value))) {
+      return "-";
+    }
+    return `${(Number(value) * 100).toFixed(1)}%`;
+  }
+
+  const LABEL_HTML = Object.freeze({
+    P_SAFER_final: "P<sub>SAFER,final</sub>",
+    P_allow: "P<sub>allow</sub>",
+    P_design: "P<sub>design</sub>",
+    P_op: "P<sub>op</sub>",
+    "P_op / P_interface": "P<sub>op</sub> / P<sub>interface</sub>",
+    "eta / F": "&eta; / F",
+    "d/t": "d/t",
+    "L/sqrt(Dt)": "L/&radic;(Dt)",
+    "w/(piD)": "w/(&pi;D)",
+    "Selected p_unsafe": "Selected p<sub>unsafe</sub>",
+  });
+
+  function labelHtml(label) {
+    return LABEL_HTML[label] || escapeHtml(label);
+  }
+
+  function mathify(text) {
+    return escapeHtml(text)
+      .replaceAll("P_SAFER_final", "P<sub>SAFER,final</sub>")
+      .replaceAll("P_interface", "P<sub>interface</sub>")
+      .replaceAll("P_allow", "P<sub>allow</sub>")
+      .replaceAll("P_design", "P<sub>design</sub>")
+      .replaceAll("P_op", "P<sub>op</sub>")
+      .replaceAll("p_unsafe", "p<sub>unsafe</sub>")
+      .replaceAll("eta", "&eta;")
+      .replaceAll("sigma_y", "&sigma;<sub>y</sub>")
+      .replaceAll("sigma_u", "&sigma;<sub>u</sub>")
+      .replaceAll("L/sqrt(Dt)", "L/&radic;(Dt)")
+      .replaceAll("w/(piD)", "w/(&pi;D)");
+  }
+
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function readForm() {
@@ -312,7 +493,55 @@
     for (const key of Object.keys(DEFAULTS)) {
       input[key] = document.getElementById(key).value;
     }
+    input.factorPreset = document.getElementById("factorPreset").value;
     return input;
+  }
+
+  function renderReport(report) {
+    renderSummary(report);
+    renderDetailList("interfaceDetails", [
+      ["P_allow", formatPressure(report.interface.p_allow)],
+      ["P_design", formatPressure(report.interface.p_design)],
+      ["Governing constraint", report.interface.governing],
+      ["eta / F", `${formatNumber(report.interface.eta, 3)} / ${formatNumber(report.interface.F, 3)}`],
+      ["P_op", report.interface.p_op === null ? "Not provided" : formatPressure(report.interface.p_op)],
+      ["P_op / P_interface", formatRatio(report.interface.p_op_over_interface)],
+    ]);
+    renderDetailList("explanationDetails", [
+      ["d/t", formatRatio(report.explanation.d_over_t)],
+      ["L/sqrt(Dt)", formatRatio(report.explanation.L_over_sqrtDt)],
+      ["w/(piD)", formatRatio(report.explanation.w_over_piD)],
+      ["SAFER adjustment", formatPressure(report.explanation.safer_adjustment)],
+      ["SAFER model spread", formatPressure(report.explanation.safer_spread)],
+      ["Selected p_unsafe", formatPercent(report.explanation.final_p_unsafe)],
+      ["Risk level", report.explanation.risk_level || "-"],
+    ]);
+    renderResults(report.rows);
+  }
+
+  function renderSummary(report) {
+    setText("saferCapacity", formatPressure(report.summary.p_safer_final));
+    setHtml("saferCapacityNote", `${labelHtml("P_SAFER_final")} from ${escapeHtml(report.summary.final_method)}`);
+    setText("interfacePressure", formatPressure(report.summary.p_interface));
+    setText("interfaceNote", `Controlled by ${report.interface.governing}`);
+    setText("decisionText", report.summary.decision.label);
+    setHtml("decisionNote", mathify(report.summary.decision.note));
+    const decisionCard = document.getElementById("decisionCard");
+    decisionCard.classList.remove("pass", "review", "incomplete");
+    decisionCard.classList.add(report.summary.decision.status);
+  }
+
+  function renderDetailList(id, pairs) {
+    const list = document.getElementById(id);
+    list.textContent = "";
+    for (const [label, value] of pairs) {
+      const term = document.createElement("dt");
+      term.innerHTML = labelHtml(label);
+      const description = document.createElement("dd");
+      description.textContent = value;
+      list.appendChild(term);
+      list.appendChild(description);
+    }
   }
 
   function renderResults(results) {
@@ -346,6 +575,11 @@
       margin.textContent = formatNumber(row.margin);
       tr.appendChild(margin);
 
+      const pUnsafe = document.createElement("td");
+      pUnsafe.className = "number";
+      pUnsafe.textContent = row.p_unsafe === null || row.p_unsafe === undefined ? "" : formatPercent(row.p_unsafe);
+      tr.appendChild(pUnsafe);
+
       const opMargin = document.createElement("td");
       opMargin.className = "number";
       opMargin.textContent = formatNumber(row.op_margin);
@@ -358,6 +592,14 @@
 
       body.appendChild(tr);
     }
+  }
+
+  function setText(id, text) {
+    document.getElementById(id).textContent = text;
+  }
+
+  function setHtml(id, html) {
+    document.getElementById(id).innerHTML = html;
   }
 
   function showError(message) {
@@ -376,15 +618,31 @@
     for (const [key, value] of Object.entries(DEFAULTS)) {
       document.getElementById(key).value = String(value);
     }
+    document.getElementById("factorPreset").value = "reference";
   }
 
   function runUiCalculation() {
     try {
       clearError();
-      renderResults(calculate(readForm()));
+      renderReport(calculate(readForm()));
     } catch (error) {
       showError(error.message || String(error));
     }
+  }
+
+  function applyFactorPreset() {
+    const presetName = document.getElementById("factorPreset").value;
+    const preset = FACTOR_PRESETS[presetName];
+    if (!preset) {
+      return;
+    }
+    document.getElementById("eta").value = String(preset.eta);
+    document.getElementById("F").value = String(preset.F);
+    runUiCalculation();
+  }
+
+  function markCustomPreset() {
+    document.getElementById("factorPreset").value = "custom";
   }
 
   function initializeUi() {
@@ -394,6 +652,9 @@
       event.preventDefault();
       runUiCalculation();
     });
+    document.getElementById("factorPreset").addEventListener("change", applyFactorPreset);
+    document.getElementById("eta").addEventListener("input", markCustomPreset);
+    document.getElementById("F").addEventListener("input", markCustomPreset);
     document.getElementById("resetButton").addEventListener("click", () => {
       setDefaults();
       runUiCalculation();

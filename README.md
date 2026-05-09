@@ -1,4 +1,4 @@
-# Static Pressure Calculator
+# Static SAFER Pressure Interface Calculator
 
 This is the pure static web version of the local pressure calculator.
 
@@ -36,10 +36,20 @@ The page returns:
 - DNV-RP-F101, ASME B31G, Modified B31G, PCORRC, Modified PCORRC
 - Top-3 residual models
 - Top-3 SAFER models
-- Operating-pressure margin and safety ratio for the user-specified `P_op`
+- `P_SAFER_final`, defined as the maximum of the available SAFER capacity estimates
+- `P_allow = eta * P_SAFER_final`
+- `P_design = 2 * sigma_y * t / D * F`
+- `P_interface = min(P_allow, P_design)`
+- Optional operating-pressure screening when `P_op` is entered
+- Defect severity and model-explanation indicators: `d/t`, `L/sqrt(Dt)`, `w/(piD)`, SAFER adjustment, model spread, and selected `p_unsafe`
 
 Each method name includes held-out test-set unsafe rate and MAPE, for example:
 
 ```text
 SAFER-Cat (unsafe 4.17%, MAPE 13.94%)
 ```
+
+The default screening setting is `eta = 0.72` and `F = 0.72`. Users can choose more
+conservative presets or enter custom factors. `P_interface` is a capacity-side
+pressure input for engineering screening; it is not, by itself, an approved operating
+pressure or a repair decision.
